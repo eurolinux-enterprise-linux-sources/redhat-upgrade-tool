@@ -1,0 +1,7 @@
+[Unit]
+Description=Switch Root
+DefaultDependencies=no
+Requires=upgrade-switch-root.service
+After=cryptsetup.target
+AllowIsolate=yes
+ConditionPathExists=/run/initramfs/upgrade.conf

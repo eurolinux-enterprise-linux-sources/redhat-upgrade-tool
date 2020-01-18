@@ -1,0 +1,6 @@
+*.pyc
+__pycache__
+.*.swp
+build/
+fedup.log
+systemd/fedora-system-upgrade

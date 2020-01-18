@@ -1,0 +1,94 @@
+redhat-upgrade-tool - the Red Hat Upgrader
+===========================
+Will Woods <wwoods@redhat.com>
+:redhat_upgrade_dracut: https://github.com/dashea/redhat-upgrade-dracut/
+
+This is 'redhat-upgrade-tool', the Red Hat Upgrade tool. This repo/package has
+the following contents:
+
+Frontend / pre-upgrade::
+    This is the GUI/CLI frontend. It's responsible for setting up the system
+    to be upgraded: downloading packages, modifying the bootloader, etc.
+    * Files: `redhat_upgrade_tool/`, `redhat_upgrade_tool.py`
+
+Upgrade services::
+    Part of a distro-neutral framework for performing major system upgrades
+    using 'systemd' and 'dracut', with a 'plymouth' progress screen.
+    This part lets your system switch back to the upgrade initramfs after
+    setting up your disks.
+    * Files: `systemd/`
+
+The actual upgrade is handled inside the initramfs by 'redhat-upgrade-dracut', which
+can be found here: {redhat_upgrade_dracut}
+
+Building it yourself
+--------------------
+
+For you brave pioneers who want to do it all yourselves, you will need at
+least two systems: one with the _new_ release (to build upgrade images), and
+then any _old_ systems you want to upgrade.
+
+Building upgrade images
+~~~~~~~~~~~~~~~~~~~~~~~
+You'll need a system running the _new_ release for this.
+
+See {redhat_upgrade_dracut}[the redhat-upgrade-dracut README] for details, but roughly:
+
+. Install 'redhat-upgrade-dracut' and its dependencies
+    * deps: 'dracut', 'rpm-devel', 'plymouth-devel', 'glib2-devel'
+. `make install`
+. `./make-redhat-upgrade-repo REPODIR`
+    * this requires 'createrepo'
+. Copy REPODIR somewhere HTTP-accessible
+
+Upgrading old system using `redhat-upgrade-tool`
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+. Install build requirements
+    * 'python-devel', 'systemd-devel'
+. Install frontend(s) and systemd support files
+    * `make install`
+. Run redhat-upgrade-tool to prepare system
+    * `redhat-upgrade-tool --network 7.0 --instrepo http://your-repo.host/REPODIR`
+    ** This will take a while. _Be patient._
+    ** You can cancel it and it'll resume downloading where it left off.
+. Reboot
+    * *System Upgrade* boot menu item will be chosen automatically
+. Wait 60-90 minutes for the upgrade to complete
+. Enjoy your newly-upgraded system
+    * upgrade logs are in `/var/log/upgrade.log`
+
+How network upgrades work
+-------------------------
+
+There's two simple rules that control where `redhat-upgrade-tool` looks for packages when
+doing network upgrades.
+
+Given `redhat-upgrade-tool --network $VERSION`, redhat-upgrade-tool will:
+
+1. Use the existing repo configuration, with `$releasever` set to `$VERSION`
+2. Add an extra 'instrepo' for fetching boot images; this repo defaults to
+   https://mirrors.fedoraproject.org/metalink/repo=fedora-install-$releasever&arch=$basearch
+
+`$VERSION` could be any string; currently `redhat-upgrade-tool` accepts numbers
+greater than the current system version. No explicit validation of `$VERSION`
+is done beyond that.
+
+If the user gives an invalid version (e.g. `redhat-upgrade-tool --network 31337`), redhat-upgrade-tool
+will still set up repos and attempt to contact them, but they won't be found,
+which will cause the upgrade to fail. So invalid versions are _implicitly_
+rejected.
+
+For repo maintainers
+~~~~~~~~~~~~~~~~~~~~
+If you are a repo maintainer and you want upgrades to work, you should ensure
+that the URLs in your `.repo` file will work for any valid `$releasever`,
+including "rawhide".
+
+If you change the layout of your repos, set up symlinks/redirects for the old
+URL schemes.
+
+Conversely, you should also ensure that the URLs _don't_ work for _invalid_
+versions. So you should avoid wildcard redirects or URLs without
+`$releasever`.
+
+// vim: syntax=asciidoc tw=78:

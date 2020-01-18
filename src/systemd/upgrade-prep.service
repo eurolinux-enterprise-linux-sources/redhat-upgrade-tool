@@ -1,0 +1,16 @@
+[Unit]
+Description=Prepare Upgrade Image
+Documentation=man:upgrade-prep.service(8)
+After=sysinit.target
+OnFailure=reboot.target
+OnFailureIsolate=true
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/upgrade-prep.sh
+ExecStopPost=-/usr/bin/systemctl --no-block isolate upgrade-switch-root.target
+StandardOutput=journal+console
+
+[Install]
+WantedBy=system-upgrade.target
