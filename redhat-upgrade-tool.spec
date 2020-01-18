@@ -1,16 +1,16 @@
 Name:           redhat-upgrade-tool
-Version:        0.7.3
-Release:        2%{?dist}
+Version:        0.7.6
+Release:        1%{?dist}
 Summary:        The Red Hat Enterprise Linux Upgrade tool
 Epoch:          2
 
 License:        GPLv2+
 URL:            https://github.com/dashea/redhat-upgrade-tool
-Source0:        https://github.com/downloads/dashea/redhat-upgrade-tool/%{name}-%{version}.tar.xz
+Source0:        %{name}-%{version}.tar.xz
 
 # Require updates to various packages where necessary to fix bugs.
 # Bug #910326
-Requires:       systemd >= systemd-44-23.fc17
+Requires:       systemd >= 44-23
 Requires:       grubby
 
 BuildRequires:  python2-devel
@@ -69,6 +69,22 @@ mkdir -p $RPM_BUILD_ROOT/etc/redhat-upgrade-tool/update.img.d
 #{_datadir}/redhat-upgrade-tool/ui
 
 %changelog
+* Thu Jan 23 2014 David Shea <dshea@redhat.com> - 2:0.7.6-1
+- Remove the URL from the Source0 line (dshea)
+  Resolves: rhbz#1056730
+- fix UnboundLocalError with fedup --device (wwoods)
+  Resolves: rhbz#1056717
+
+* Mon Dec 16 2013 David Shea <dshea@redhat.com> - 2:0.7.5-1
+- Add a generic problem summarizer
+  Resolves: rhbz#1040684
+
+* Wed Dec 11 2013 David Shea <dshea@redhat.com> - 2:0.7.4-1
+- Fix the systemd Requires: line.
+  Resolves: rhbz#1035461
+- Drop /run/initramfs/upgrade.conf
+  Related: rhbz#1030561
+
 * Fri Nov  8 2013 David Shea <dshea@redhat.com> - 2:0.7.3-2
 - Rename to redhat-upgrade-tool
   Resolves: rhbz#1027491
