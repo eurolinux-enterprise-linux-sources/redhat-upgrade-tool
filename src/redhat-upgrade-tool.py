@@ -20,18 +20,29 @@
 #
 # Author: Will Woods <wwoods@redhat.com>
 
-import os, sys, time
-from subprocess import call
+import os, sys, time, platform, shutil
+from subprocess import call, check_call, CalledProcessError, Popen, PIPE
+from ConfigParser import NoOptionError
 
-from redhat_upgrade_tool.download import UpgradeDownloader, YumBaseError, yum_plugin_for_exc
-from redhat_upgrade_tool.sysprep import prep_upgrade, prep_boot, setup_media_mount
+from redhat_upgrade_tool.util import rm_f, mkdir_p
+from redhat_upgrade_tool.download import UpgradeDownloader, YumBaseError, yum_plugin_for_exc, URLGrabError
+from redhat_upgrade_tool.sysprep import prep_upgrade, prep_boot, setup_media_mount, setup_cleanup_post
 from redhat_upgrade_tool.upgrade import RPMUpgrade, TransactionError
 
 from redhat_upgrade_tool.commandline import parse_args, do_cleanup, device_setup
 from redhat_upgrade_tool import textoutput as output
+from redhat_upgrade_tool import upgradeconf
 
 import redhat_upgrade_tool.logutils as logutils
 import redhat_upgrade_tool.media as media
+
+try:
+    from preup import xccdf
+    from preup import settings
+    preupgrade_available = True
+except ImportError:
+    preupgrade_available = False
+
 
 import logging
 log = logging.getLogger("redhat-upgrade-tool")
@@ -57,6 +68,7 @@ def setup_downloader(version, instrepo=None, cacheonly=False, repos=[],
     if disabled_repos:
         print _("No upgrade available for the following repos") + ": " + \
                 " ".join(disabled_repos)
+        print _("Check that the repo URLs are correct.")
         log.info("disabled repos: " + " ".join(disabled_repos))
     return f
 
@@ -69,7 +81,7 @@ def download_packages(f):
         raise SystemExit(0)
     # print dependency problems before we start the upgrade
     transprobs = f.describe_transaction_problems()
-    if transprobs:
+    if transprobs and not major_upgrade:
         print "WARNING: potential problems with upgrade"
         for p in transprobs:
             print "  " + p
@@ -91,7 +103,15 @@ def transaction_test(pkgs):
 def reboot():
     call(['systemctl', 'reboot'])
 
+def get_preupgrade_result_name():
+    if preupgrade_available:
+        return os.path.join(settings.result_dir, settings.xml_result_name)
+    else:
+        return None
+
 def main(args):
+    global major_upgrade
+
     if args.clean:
         do_cleanup(args)
         return
@@ -108,6 +128,70 @@ def main(args):
                          enable_plugins=args.enable_plugins,
                          disable_plugins=args.disable_plugins)
 
+    # Compare the first part of the version number in the treeinfo with the
+    # first part of the version number of the system to determine if this is a
+    # major version upgrade
+    if f.treeinfo.get('general', 'version').split('.')[0] != \
+            platform.linux_distribution()[1].split('.')[0]:
+
+        major_upgrade = True
+
+        # Check if preupgrade-assistant has been run
+        if args.force:
+            log.info("Skipping check for preupgrade-assisant")
+
+        if not args.force and preupgrade_available:
+            # Run preupg --riskcheck
+            returncode = xccdf.check_inplace_risk(get_preupgrade_result_name(), 0)
+            if int(returncode) == 0:
+                print _("Preupgrade assistant does not found any risks")
+                print _("Upgrade will continue.")
+            elif int(returncode) == 1:
+                print _("Preupgrade assistant risk check found risks for this upgrade.")
+                print _("You can run preupg --riskcheck --verbose to view these risks.")
+                print _("Addressing high risk issues is required before the in-place upgrade")
+                print _("and ignoring these risks may result in a broken upgrade and unsupported upgrade.")
+                print _("Please backup your data.")
+                print ""
+                print _("List of issues:")
+
+                xccdf.check_inplace_risk(get_preupgrade_result_name(), verbose=2)
+
+                answer = raw_input(_("Continue with the upgrade [Y/N]? "))
+                # TRANSLATORS: y for yes
+                if answer.lower() != _('y'):
+                    raise SystemExit(1)
+            elif int(returncode) == 2:
+                print _("preupgrade-assistant risk check found EXTREME risks for this upgrade.")
+                print _("Run preupg --riskcheck --verbose to view these risks.")
+                print _("Continuing with this upgrade is not recommended.")
+                raise SystemExit(1)
+            else:
+                print _("preupgrade-assistant has not been run.")
+                print _("To perform this upgrade, either run preupg or run redhat-upgrade-tool --force")
+                raise SystemExit(1)
+
+    # Check that we are upgrading to the same variant
+    if not args.force:
+        distro = platform.linux_distribution()[0]
+        if not distro.startswith("Red Hat Enterprise Linux "):
+            print _("Invalid distribution: %s") % distro
+            raise SystemExit(1)
+
+        from_variant = distro[len('Red Hat Enterprise Linux '):]
+        try:
+            to_variant = f.treeinfo.get('general', 'variant')
+        except NoOptionError:
+            print _("Upgrade repository is not a Red Hat Enterprise Linux repository")
+            raise SystemExit(1)
+
+        if from_variant != to_variant:
+            print _("Upgrade requested from Red Hat Enterprise Linux %s to %s") % (from_variant, to_variant)
+            print _("Upgrades between Red Hat Enterprise Linux variants is not supported.")
+            raise SystemExit(1)
+    else:
+        log.info("Skipping variant check")
+
     if args.nogpgcheck:
         f._override_sigchecks = True
 
@@ -119,6 +203,11 @@ def main(args):
         print "cleaning metadata"
         f.cleanMetadata()
         return
+
+    # Cleanup old conf files
+    log.info("Clearing %s", upgradeconf)
+    rm_f(upgradeconf)
+    mkdir_p(os.path.dirname(upgradeconf))
 
     # TODO: error msg generation should be shared between CLI and GUI
     if args.skipkernel:
@@ -158,6 +247,9 @@ def main(args):
     if not args.skippkgs:
         prep_upgrade(pkgs)
 
+    # Save the repo configuration
+    f.save_repo_configs()
+
     if not args.skipbootloader:
         if args.skipkernel:
             print "warning: --skipkernel without --skipbootloader"
@@ -172,6 +264,15 @@ def main(args):
     if args.iso:
         media.umount(args.device.mnt)
 
+    if args.cleanup_post:
+        setup_cleanup_post()
+
+    # Workaround the redhat-upgrade-dracut upgrade-post hook order problem
+    # Copy upgrade.conf to /root/preupgrade so that it won't be removed
+    # before the postupgrade scripts are run.
+    mkdir_p('/root/preupgrade')
+    shutil.copyfile(upgradeconf, '/root/preupgrade/upgrade.conf')
+
     if args.reboot:
         reboot()
     else:
@@ -181,7 +282,7 @@ def main(args):
 
     # list packages without updates, if any
     missing = sorted(f.find_packages_without_updates(), key=lambda p:p.envra)
-    if missing:
+    if missing and not major_upgrade:
         message(_('Packages without updates:'))
         for p in missing:
             message("  %s" % p)
@@ -199,7 +300,9 @@ def main(args):
         #print _("If you start the upgrade now, packages from these repos will not be installed.")
 
     # warn about broken dependencies etc.
-    if probs:
+    # If this is a major version upgrade, the user has already been warned
+    # about all of this from preupgrade-assistant, so skip the warning here
+    if probs and not major_upgrade:
         print
         print _("WARNING: problems were encountered during transaction test:")
         for s in probs.summaries:
@@ -210,6 +313,7 @@ def main(args):
 
 if __name__ == '__main__':
     args = parse_args()
+    major_upgrade = False
 
     # TODO: use polkit to get privs for modifying bootloader stuff instead
     if os.getuid() != 0:
@@ -231,9 +335,9 @@ if __name__ == '__main__':
         if e.message:
             message(_("Exiting on keyboard interrupt (%s)") % e.message)
         raise SystemExit(1)
-    except YumBaseError as e:
+    except (YumBaseError, URLGrabError) as e:
         print
-        if isinstance(e.value, list):
+        if hasattr(e, "value") and isinstance(e.value, list):
             err = e.value.pop(0)
             message(_("Downloading failed: %s") % err)
             for p in e.value:

@@ -40,6 +40,11 @@ def parse_args(gui=False):
         const=logging.DEBUG, help=_('print lots of debugging info'))
     p.set_defaults(loglevel=logging.WARNING)
 
+    p.add_argument('-f', '--force', action='store_true', default=False,
+            help=_('continue even if preupgrade-assistant risk check fails'))
+    p.add_argument('--cleanup-post', action='store_true', default=False,
+            help=_('cleanup old package after the upgrade'))
+
     p.add_argument('--debuglog', default='/var/log/%s.log' % __package__,
         help=_('write lots of debugging output to the given file'))
 
@@ -89,8 +94,6 @@ def parse_args(gui=False):
         dest='repos', help=_('enable one or more repos (wildcards allowed)'))
     net.add_argument('--disablerepo', metavar='REPOID', action=RepoAction,
         dest='repos', help=_('disable one or more repos (wildcards allowed)'))
-    net.add_argument('--repourl', metavar='REPOID=URL', action=RepoAction,
-        dest='repos', help=argparse.SUPPRESS)
     net.add_argument('--addrepo', metavar='REPOID=[@]URL',
         action=RepoAction, dest='repos',
         help=_('add the repo at URL (@URL for mirrorlist)'))
@@ -121,6 +124,10 @@ def parse_args(gui=False):
         args.repos.append(('add', 'cmdline-instrepo=%s' % args.instrepo))
         args.instrepo = 'cmdline-instrepo'
 
+    # If network is requested, require an instrepo
+    if args.network and not args.instrepo:
+        p.error(_('--instrepo is required with --network'))
+
     if not gui:
         if args.clean:
             args.resetbootloader = True
@@ -136,8 +143,13 @@ class RepoAction(argparse.Action):
             action = 'enable'
         elif opt.startswith('--disable'):
             action = 'disable'
-        elif opt.startswith('--repo') or opt.startswith('--addrepo'):
+        elif opt.startswith('--addrepo'):
             action = 'add'
+            # validate the argument
+            repoid, eq, url = value.partition("=")
+            if not (repoid and eq and "://" in url):
+                raise argparse.ArgumentError(self,
+                                        _("value should be REPOID=[@]URL"))
         curval.append((action, value))
         setattr(namespace, self.dest, curval)
 
@@ -179,9 +191,9 @@ def VERSION(arg):
         return 'rawhide'
 
     distro, version, id = platform.linux_distribution()
-    version = int(version)
+    version = float(version)
 
-    if int(arg) >= version:
+    if float(arg) >= version:
         return arg
     else:
         msg = _("version must be greater than %i") % version
@@ -203,7 +215,7 @@ def do_cleanup(args):
     misc_cleanup()
 
 def device_setup(args):
-    # treat --device like --repo REPO=file://$MOUNTPOINT
+    # treat --device like --addrepo REPO=file://$MOUNTPOINT
     if args.device:
         args.repos.append(('add', 'upgradedevice=file://%s' % args.device.mnt))
         args.instrepo = 'upgradedevice'

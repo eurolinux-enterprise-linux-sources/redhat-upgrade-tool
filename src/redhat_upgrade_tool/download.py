@@ -27,6 +27,7 @@ from .conf import Config
 from yum.Errors import YumBaseError
 from yum.parser import varReplace
 from yum.constants import TS_REMOVE_STATES
+from urlgrabber.grabber import URLGrabError
 from yum.misc import gpgme
 
 enabled_plugins = ['blacklist', 'whiteout']
@@ -212,15 +213,28 @@ class UpgradeDownloader(yum.YumBase):
 
         return self.disabled_repos
 
-    # XXX currently unused
-    def save_repo_configs():
+    def save_repo_configs(self):
         '''save repo configuration files for later use'''
-        repodir = os.path.join(cachedir, 'yum.repos.d')
+        repodir = os.path.join('/etc/yum.repos.d')
         mkdir_p(repodir)
         for repo in self.repos.listEnabled():
-            repofile = os.path.join(repodir, "%s.repo" % repo.id)
+            repofile = os.path.join(repodir, "redhat-upgrade-%s.repo" % repo.id)
             try:
-                repo.write(open(repofile), 'w')
+                with open(repofile, 'w') as f:
+                    f.write("[redhat-upgrade-%s]\n" % repo.id)
+                    f.write("name=Upgrade - %s\n" % repo.id)
+                    f.write("enabled=0\n")
+                    if repo.mirrorlist:
+                        f.write("mirrorlist=%s\n" % repo.mirrorlist)
+                    elif repo.metalink:
+                        f.write("metalink=%s\n" % repo.metalink)
+                    elif repo.baseurl:
+                        f.write("baseurl=%s\n" % repo.baseurl[0])
+                    else:
+                        log.error("repo %s has no baseurl, mirrorlist or metalink", repo.id)
+                        f.close()
+                        os.unlink(repofile)
+                        continue
             except IOError as e:
                 log.warn("couldn't write repofile for %s: %s", repo.id, str(e))
 
@@ -417,7 +431,6 @@ class UpgradeDownloader(yum.YumBase):
                 raise
 
         # Save kernel/initrd info so we can clean it up later
-        mkdir_p(os.path.dirname(upgradeconf))
         with Config(upgradeconf) as conf:
             conf.set("boot", "kernel", kernel)
             conf.set("boot", "initrd", initrd)
